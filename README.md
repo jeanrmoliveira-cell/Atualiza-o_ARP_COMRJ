@@ -16,16 +16,19 @@ uma planilha Excel padronizada.
 
 ## Como atualizar
 
-1. Ajuste a data de referência no topo do script:
-   ```python
-   HOJE = date(2026, 7, 22)   # troque para o dia da extração
-   ```
-2. Rode:
-   ```bash
-   pip install -r requirements.txt
-   python extrair_atas_vigentes_comrj.py
-   ```
-3. O arquivo `COMRJ_Atas_Vigentes.xlsx` é sobrescrito com os dados atualizados.
+Basta rodar — a data de referência é **hoje automaticamente** (`HOJE = date.today()`),
+e a varredura de anos se ajusta sozinha:
+
+```bash
+pip install -r requirements.txt
+python extrair_atas_vigentes_comrj.py
+```
+
+O arquivo `COMRJ_Atas_Vigentes.xlsx` é sobrescrito com os dados atualizados.
+(Para congelar uma data específica, edite `HOJE` no topo do script.)
+
+> **Requisito:** o script faz chamadas HTTP à API `dadosabertos.compras.gov.br`.
+> O ambiente onde ele roda precisa ter **acesso de saída à internet** para essa API.
 
 ## O que a planilha contém
 

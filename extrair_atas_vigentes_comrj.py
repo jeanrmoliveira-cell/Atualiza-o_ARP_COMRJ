@@ -27,8 +27,8 @@ from datetime import datetime, date
 UASG = "771300"
 BASE = "https://dadosabertos.compras.gov.br"
 PNCP = "https://pncp.gov.br/api/consulta/v1"
-HOJE = date(2026, 7, 22)
-ANOS_VIGENCIA = [2024, 2025, 2026]   # anos de dataVigenciaInicial a varrer
+HOJE = date.today()   # data de referência = hoje (edite p/ uma data fixa se quiser)
+ANOS_VIGENCIA = list(range(HOJE.year - 2, HOJE.year + 1))  # cobre atas vigentes hoje (ARP <= 2 anos)
 
 SESSAO = requests.Session()
 SESSAO.headers.update({"Accept": "application/json"})
@@ -112,7 +112,7 @@ def get_json(url, tentativas=4, timeout=60):
 
 # ── 1) Itens de ARP vigentes ──────────────────────────────────
 def buscar_itens_arp_vigentes():
-    print("Buscando itens de ARP (vig. inicial 2024-2026)...", flush=True)
+    print(f"Buscando itens de ARP (vig. inicial {ANOS_VIGENCIA[0]}-{ANOS_VIGENCIA[-1]})...", flush=True)
     brutos = []
     for y in ANOS_VIGENCIA:
         pagina = 1

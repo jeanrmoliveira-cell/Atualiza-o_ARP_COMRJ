@@ -5,8 +5,12 @@ Extração de Atas de Registro de Preços (ARP) **vigentes** do **COMRJ**
 `COMRJ_Atas_Vigentes.xlsx`. Script principal: `extrair_atas_vigentes_comrj.py`.
 
 ## Como atualizar até a data de hoje
-Edite `HOJE = date(AAAA, M, D)` no topo do script para a data da extração e rode
-`python extrair_atas_vigentes_comrj.py`. A planilha é sobrescrita.
+Só rodar `python extrair_atas_vigentes_comrj.py` — a data de referência já é
+`date.today()` e a varredura de anos se ajusta sozinha. A planilha é sobrescrita.
+Depois, commit + push. (Para congelar uma data, edite `HOJE` no topo do script.)
+
+**Atenção:** exige acesso de saída à internet para `dadosabertos.compras.gov.br`.
+Se o sandbox bloquear a saída, o script falha na coleta.
 
 ## API (base `https://dadosabertos.compras.gov.br`)
 `tamanhoPagina` deve ficar entre 10 e 500 (fora disso = HTTP 400).
