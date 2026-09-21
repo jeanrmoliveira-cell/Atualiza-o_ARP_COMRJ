@@ -49,6 +49,7 @@ vigência encerrada são descartadas. A varredura por vigência inicial cobre
 
 ## Última atualização
 
-- **Data de referência:** 22/07/2026
-- **Pregões com atas vigentes:** 77
-- **Itens vigentes:** 4.297
+- **Data de referência:** 21/09/2026
+- **Pregões com atas vigentes:** 66
+- **Itens vigentes:** 3.806
+- **Valor total dos itens vigentes:** R$ 927.274.964,95
