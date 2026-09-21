@@ -40,16 +40,21 @@ O arquivo `COMRJ_Atas_Vigentes.xlsx` é sobrescrito com os dados atualizados.
 - **Aba "Resumo por Pregão"** — uma linha por pregão.
 - **Aba "Legenda"** — critérios e conceitos.
 
-## Critério de "vigente"
+## Critério de "vigente" e PRORROGAÇÕES
 
-Mantém apenas itens com `Vig. Fim >= data de referência` e não excluídos. Atas com
-vigência encerrada são descartadas. A varredura por vigência inicial cobre
-2024–2026, o que captura todas as atas vigentes hoje (uma ARP vai no máximo a
-2 anos, então nenhuma ata iniciada antes de meados de 2024 continua vigente).
+Mantém apenas itens com `Vig. Fim >= data de referência`, item não excluído e ata
+não cancelada.
+
+> **Importante — atas prorrogadas/renovadas:** a API de dados abertos guarda a
+> vigência **original** e NÃO reflete prorrogações. Por isso o script confirma a
+> vigência de cada ata no **PNCP** (`/api/pncp/v1/.../atas`), que é a fonte
+> autoritativa, e usa essa data. Atas renovadas recebem a situação
+> **"Vigente (prorrogada)"** (destacadas em azul). Sem esse cruzamento, atas
+> renovadas seriam perdidas assim que a data original vencesse.
 
 ## Última atualização
 
 - **Data de referência:** 21/09/2026
-- **Pregões com atas vigentes:** 66
-- **Itens vigentes:** 3.806
-- **Valor total dos itens vigentes:** R$ 927.274.964,95
+- **Pregões com atas vigentes:** 71
+- **Itens vigentes:** 3.708 (dos quais **195 em atas prorrogadas**, 25 atas)
+- **Valor total dos itens vigentes:** R$ 1.247.324.464,17

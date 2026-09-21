@@ -1,20 +1,25 @@
 """
 Extração de TODAS as Atas de Registro de Preços VIGENTES - COMRJ (UASG 771300)
-API Dados Abertos Compras.gov.br (v2) + fallback API Consulta PNCP.
+API Dados Abertos Compras.gov.br (v2) + vigência autoritativa do PNCP.
 
 Descobre dinamicamente TODAS as atas ainda vigentes na data de referência,
-inclusive de pregões de anos anteriores cuja ata continua válida.
+inclusive de pregões de anos anteriores cuja ata continua válida E ATAS
+PRORROGADAS (renovadas).
 
 Passos:
   1. modulo-arp/2_consultarARPItem  -> todos os itens de ARP da UASG
-     (varrendo dataVigenciaInicial 2024-2026).
-  2. Mantém apenas VIGENTES: dataVigenciaFinal >= HOJE e não excluídos.
-  3. Cruza cada compra pela CHAVE CANÔNICA do PNCP
-     (item.numeroControlePncpCompra  ==  contratacao.numeroControlePNCP),
+     (varrendo dataVigenciaInicial dos últimos anos).
+  2. VIGÊNCIA AUTORITATIVA: a API de dados abertos NÃO reflete prorrogações
+     (mantém a vigência original). Por isso, para cada compra consultamos o
+     PNCP (/api/pncp/v1/.../atas), que traz a vigência real e o flag de
+     cancelamento, e sobrescrevemos a data de vigência final por ata
+     (chave numeroControlePncpAta == numeroControlePNCP do PNCP).
+  3. Mantém apenas VIGENTES: vigência final (PNCP) >= HOJE, não excluído,
+     não cancelado. Itens prorrogados recebem situação "Vigente (prorrogada)".
+  4. Cruza cada compra pela CHAVE CANÔNICA do PNCP
+     (item.numeroControlePncpCompra == contratacao.numeroControlePNCP),
      obtendo NUP (processo), objeto, situação, modalidade e valores.
-     Fallback: API de Consulta do PNCP por id quando a compra não está na
-     listagem do módulo de contratações.
-  4. Gera planilha no mesmo layout da versão anterior.
+  5. Gera planilha no mesmo layout da versão anterior.
 """
 
 import requests, time
@@ -22,13 +27,17 @@ from collections import defaultdict
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 UASG = "771300"
 BASE = "https://dadosabertos.compras.gov.br"
 PNCP = "https://pncp.gov.br/api/consulta/v1"
+PNCP_ATAS = "https://pncp.gov.br/api/pncp/v1"   # vigência autoritativa (reflete prorrogação)
 HOJE = date.today()   # data de referência = hoje (edite p/ uma data fixa se quiser)
-ANOS_VIGENCIA = list(range(HOJE.year - 2, HOJE.year + 1))  # cobre atas vigentes hoje (ARP <= 2 anos)
+ANOS_VIGENCIA = list(range(HOJE.year - 3, HOJE.year + 1))  # cobre atas vigentes hoje, inclusive prorrogadas
+# Só verifica no PNCP compras cuja vigência (dados abertos) terminou nos últimos
+# ~400 dias ou ainda está aberta — janela suficiente p/ captar prorrogações.
+LIMIAR_PRORROGA = HOJE - timedelta(days=400)
 
 SESSAO = requests.Session()
 SESSAO.headers.update({"Accept": "application/json"})
@@ -110,8 +119,8 @@ def get_json(url, tentativas=4, timeout=60):
             time.sleep(1.5 * (t + 1))
     return None
 
-# ── 1) Itens de ARP vigentes ──────────────────────────────────
-def buscar_itens_arp_vigentes():
+# ── 1) Itens de ARP (todos, sem filtrar vigência ainda) ───────
+def buscar_itens_arp():
     print(f"Buscando itens de ARP (vig. inicial {ANOS_VIGENCIA[0]}-{ANOS_VIGENCIA[-1]})...", flush=True)
     brutos = []
     for y in ANOS_VIGENCIA:
@@ -148,19 +157,104 @@ def buscar_itens_arp_vigentes():
         if cur is None or rank(it) < rank(cur):
             melhor[k] = it
     unicos = list(melhor.values())
+    print(f"  brutos {len(brutos)} | únicos (ata,item) {len(unicos)}", flush=True)
+    return unicos
 
+def _parse_dt(s):
+    try:
+        return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+# ── 2) Vigência AUTORITATIVA do PNCP (reflete prorrogações) ────
+def _compra_para_url(ncp_compra):
+    """'00394502000144-1-014311/2025' -> (cnpj, ano, seq)."""
+    try:
+        p = ncp_compra.split("-")
+        cnpj = p[0]
+        seq, ano = p[2].split("/")
+        return cnpj, ano, int(seq)
+    except Exception:
+        return None
+
+def carregar_vigencias_pncp(unicos):
+    """Para cada compra com ata potencialmente vigente/prorrogada, consulta o
+    PNCP e mapeia numeroControlePNCP(ata) -> {vigFim, vigIni, cancelado}."""
+    # compras candidatas: alguma ata com vig. final (dados abertos) >= limiar
+    compras = {}
+    for it in unicos:
+        vf = _parse_dt(it.get("dataVigenciaFinal"))
+        if vf and vf >= LIMIAR_PRORROGA:
+            compras.setdefault(it.get("numeroControlePncpCompra"), True)
+    compras = [c for c in compras if c]
+    print(f"Consultando vigência autoritativa no PNCP para {len(compras)} compras...", flush=True)
+    vig = {}
+    falhas = []
+    for i, ncp in enumerate(compras, 1):
+        parsed = _compra_para_url(ncp)
+        if not parsed:
+            continue
+        cnpj, ano, seq = parsed
+        url = f"{PNCP_ATAS}/orgaos/{cnpj}/compras/{ano}/{seq}/atas"
+        j = None
+        for t in range(3):
+            try:
+                r = SESSAO.get(url, timeout=30)
+                if r.status_code == 200 and r.text.strip():
+                    j = r.json(); break
+                if r.status_code in (204, 404):
+                    j = []; break
+                time.sleep(1.0 * (t + 1))
+            except Exception:
+                time.sleep(1.5 * (t + 1))
+        if j is None:
+            falhas.append(ncp); continue
+        arr = j if isinstance(j, list) else (j.get("data") or [])
+        for a in arr:
+            k = a.get("numeroControlePNCP")
+            if k:
+                vig[k] = {
+                    "vigFim": _parse_dt(a.get("dataVigenciaFim")),
+                    "vigIni": _parse_dt(a.get("dataVigenciaInicio")),
+                    "cancelado": bool(a.get("cancelado")),
+                }
+        if i % 25 == 0:
+            print(f"  ... {i}/{len(compras)} compras", flush=True)
+        time.sleep(0.08)
+    print(f"  atas com vigência PNCP: {len(vig)} | falhas de consulta: {len(falhas)}", flush=True)
+    return vig, falhas
+
+def filtrar_vigentes(unicos, vig_pncp):
+    """Aplica a vigência autoritativa e mantém só os itens vigentes hoje.
+    Marca 'prorrogada' quando o PNCP estende além da data de dados abertos."""
     vigentes = []
+    n_prorrog = 0
     for it in unicos:
         if it.get("itemExcluido"):
             continue
-        vf = it.get("dataVigenciaFinal")
-        try:
-            d = datetime.strptime(vf[:10], "%Y-%m-%d").date()
-        except Exception:
+        da_fim = _parse_dt(it.get("dataVigenciaFinal"))
+        info = vig_pncp.get(it.get("numeroControlePncpAta"))
+        prorrogada = False
+        if info:
+            if info["cancelado"]:
+                continue
+            vfim = info["vigFim"] or da_fim
+            if info["vigFim"] and da_fim and info["vigFim"] > da_fim:
+                prorrogada = True
+            vini = info["vigIni"] or _parse_dt(it.get("dataVigenciaInicial"))
+        else:
+            vfim = da_fim
+            vini = _parse_dt(it.get("dataVigenciaInicial"))
+        if not vfim or vfim < HOJE:
             continue
-        if d >= HOJE:
-            vigentes.append(it)
-    print(f"  brutos {len(brutos)} | únicos {len(unicos)} | VIGENTES {len(vigentes)}", flush=True)
+        # injeta a vigência autoritativa de volta no item (strings ISO)
+        it["_vig_fim"] = vfim.strftime("%Y-%m-%d")
+        it["_vig_ini"] = vini.strftime("%Y-%m-%d") if vini else (it.get("dataVigenciaInicial") or "—")[:10]
+        it["_prorrogada"] = prorrogada
+        if prorrogada:
+            n_prorrog += 1
+        vigentes.append(it)
+    print(f"  VIGENTES {len(vigentes)} (das quais prorrogadas: {n_prorrog})", flush=True)
     return vigentes
 
 # ── 2) Pré-carga de contratações (chave canônica numeroControlePNCP) ──
@@ -284,7 +378,9 @@ print("=" * 70, flush=True)
 print("ATAS VIGENTES - COMRJ UASG 771300 | ref:", HOJE.strftime("%d/%m/%Y"), flush=True)
 print("=" * 70, flush=True)
 
-itens = buscar_itens_arp_vigentes()
+unicos = buscar_itens_arp()
+vig_pncp, falhas_pncp = carregar_vigencias_pncp(unicos)
+itens = filtrar_vigentes(unicos, vig_pncp)
 
 mods, anos_compra = set(), set()
 for it in itens:
@@ -349,13 +445,14 @@ for ncp_compra, its in grupos.items():
             "modalidade": it.get("nomeModalidadeCompra") or sit["modalidade"] or "—",
             "estimado": num_or_dash(sit["estimado"]), "homologado": num_or_dash(sit["homologado"]),
             "num_item": it.get("numeroItem", "—"), "desc": it.get("descricaoItem", "—"),
-            "tipo": it.get("tipoItem", "—"), "sit_item": "Vigente",
+            "tipo": it.get("tipoItem", "—"),
+            "sit_item": "Vigente (prorrogada)" if it.get("_prorrogada") else "Vigente",
             "qh": qh, "qe": qe, "saldo": saldo,
             "forn": it.get("nomeRazaoSocialFornecedor", "—"), "cnpj": fmt_cnpj(it.get("niFornecedor", "")),
             "vu": num_or_dash(it.get("valorUnitario")), "vt": num_or_dash(it.get("valorTotal")),
             "arp": it.get("numeroAtaRegistroPreco", "—"),
-            "vig_ini": (it.get("dataVigenciaInicial") or "—")[:10],
-            "vig_fim": (it.get("dataVigenciaFinal") or "—")[:10],
+            "vig_ini": it.get("_vig_ini") or (it.get("dataVigenciaInicial") or "—")[:10],
+            "vig_fim": it.get("_vig_fim") or (it.get("dataVigenciaFinal") or "—")[:10],
             "link": link_ata_pncp(it),
             "_ano": ano,
         })
@@ -370,7 +467,7 @@ wb = openpyxl.Workbook()
 ws = wb.active
 ws.title = "Atas Vigentes"
 
-HDR = "003366"; VERDE = "D9EAD3"; AMAR = "FFF2CC"; CINZA = "EFEFEF"
+HDR = "003366"; VERDE = "D9EAD3"; AMAR = "FFF2CC"; CINZA = "EFEFEF"; AZUL = "CFE2F3"
 bold = Font(bold=True, color="FFFFFF", size=10)
 fillh = PatternFill("solid", fgColor=HDR)
 thin = Side(style="thin", color="CCCCCC")
@@ -416,7 +513,7 @@ for d in linhas:
         if c == 5:
             cell.fill = PatternFill("solid", fgColor=cor_sit_pregao(d["sit_pregao"]))
         elif c == 12:
-            cell.fill = PatternFill("solid", fgColor=VERDE)
+            cell.fill = PatternFill("solid", fgColor=AZUL if "prorrogada" in str(d["sit_item"]) else VERDE)
         if c in MONEY_COLS and isinstance(v, float):
             cell.number_format = 'R$ #,##0.00'
     r += 1
@@ -457,13 +554,15 @@ for k, v in sorted(resumo.items(), key=lambda x: (x[1]["_ano"], x[0])):
 # ── Aba Legenda ──────────────────────────────────────────────
 wl = wb.create_sheet("Legenda")
 leg = [("CONCEITO", "SIGNIFICADO"),
-       ("Critério de seleção", "Atas com Vig. Fim >= data de referência e item NÃO excluído"),
+       ("Critério de seleção", "Atas com Vig. Fim >= data de referência, item NÃO excluído e ata NÃO cancelada"),
        ("Data de referência", HOJE.strftime("%d/%m/%Y")),
        ("UASG", f"{UASG} - Centro de Obtenção da Marinha no Rio de Janeiro (COMRJ)"),
-       ("Fonte", "API Dados Abertos Compras.gov.br (módulos ARP e Contratações) + API Consulta PNCP"),
+       ("Fonte", "API Dados Abertos Compras.gov.br (ARP e Contratações) + PNCP (vigência autoritativa)"),
+       ("Vigência (Vig. Fim)", "Vem do PNCP, que REFLETE PRORROGAÇÕES. A API de dados abertos guarda só a vigência original; por isso a vigência final é confirmada/atualizada no PNCP por ata."),
        ("", ""),
        ("Situação do Item", ""),
        ("  Vigente", "Ata com vigência em curso nesta data"),
+       ("  Vigente (prorrogada)", "Ata cuja vigência foi PRORROGADA/renovada no PNCP além da data original de dados abertos"),
        ("Situação do Pregão", ""),
        ("  Homologado (resultado publicado)", "Resultado homologado registrado no PNCP"),
        ("  Homologado (ata vigente)*", "Há ARP vigente, mas a compra não consta na listagem de contratações (objeto/NUP/valores não recuperados)"),
@@ -483,11 +582,18 @@ wb.save(out)
 # ── Estatísticas ─────────────────────────────────────────────
 tot_val = sum(d["vt"] for d in linhas if isinstance(d["vt"], float))
 sem_meta = sorted({d["numero"] for d in linhas if "ata vigente)*" in d["sit_pregao"]})
+n_prorrog = sum(1 for d in linhas if "prorrogada" in str(d["sit_item"]))
+atas_prorrog = sorted({d["arp"] for d in linhas if "prorrogada" in str(d["sit_item"])})
 print("\n" + "=" * 70, flush=True)
 print(f"OK Salvo: {out}", flush=True)
 print(f"   Pregões com atas vigentes: {len(resumo)}", flush=True)
 print(f"   Linhas de itens vigentes : {len(linhas)}", flush=True)
+print(f"   Itens em atas PRORROGADAS : {n_prorrog}  (atas: {len(atas_prorrog)})", flush=True)
 print(f"   Valor total (itens vig.) : R$ {tot_val:,.2f}", flush=True)
+if atas_prorrog:
+    print(f"   Atas prorrogadas: {', '.join(atas_prorrog[:30])}{' ...' if len(atas_prorrog)>30 else ''}", flush=True)
+if falhas_pncp:
+    print(f"   [aviso] {len(falhas_pncp)} compras sem confirmação de vigência no PNCP (usada a data de dados abertos)", flush=True)
 if sem_meta:
     print(f"   Pregões sem metadados (objeto/NUP): {len(sem_meta)} -> {sem_meta}", flush=True)
 print("=" * 70, flush=True)
