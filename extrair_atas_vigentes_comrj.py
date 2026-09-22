@@ -501,12 +501,20 @@ def cor_sit_pregao(s):
         return AMAR
     return CINZA
 
+def _to_date(s):
+    try:
+        return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+    except Exception:
+        return s
+
+DATE_COLS = {21, 22}   # Vig. Início / Vig. Fim -> gravadas como DATA (Google reconhece)
+
 r = 2
 for d in linhas:
     valores = [d["nup"], d["numero"], d["categoria"], d["objeto"], d["sit_pregao"],
                d["modalidade"], d["estimado"], d["homologado"], d["num_item"], d["desc"],
                d["tipo"], d["sit_item"], d["qh"], d["qe"], d["saldo"], d["forn"], d["cnpj"],
-               d["vu"], d["vt"], d["arp"], d["vig_ini"], d["vig_fim"], d["link"], agora]
+               d["vu"], d["vt"], d["arp"], _to_date(d["vig_ini"]), _to_date(d["vig_fim"]), d["link"], agora]
     for c, v in enumerate(valores, 1):
         cell = ws.cell(r, c, v); cell.border = bd
         cell.alignment = ctr if c in CENTER_COLS else lft
@@ -516,6 +524,8 @@ for d in linhas:
             cell.fill = PatternFill("solid", fgColor=AZUL if "prorrogada" in str(d["sit_item"]) else VERDE)
         if c in MONEY_COLS and isinstance(v, float):
             cell.number_format = 'R$ #,##0.00'
+        if c in DATE_COLS and hasattr(v, "year"):
+            cell.number_format = 'DD/MM/YYYY'
     r += 1
 
 # ── Aba Resumo por Pregão ────────────────────────────────────
